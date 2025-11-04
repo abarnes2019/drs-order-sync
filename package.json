@@ -1,10 +1,9 @@
 {
   "name": "drs-order-sync",
   "version": "1.0.0",
-  "type": "module",
   "private": true,
+  "type": "module",
   "dependencies": {
-    "@airtable/blocks": "0.0.0",
     "airtable": "^0.12.1",
     "playwright": "^1.48.2"
   },
