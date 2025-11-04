@@ -13,15 +13,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install --no-fund --no-audit      
+
+      - run: npm install --no-fund --no-audit
       - run: npx playwright install --with-deps chromium
-      - run: npm run scrape
+
+      - name: Scrape & import
+        run: npm run scrape
         env:
           DRS_BASE: ${{ secrets.DRS_BASE }}
           DRS_USERNAME: ${{ secrets.DRS_USERNAME }}
           DRS_PASSWORD: ${{ secrets.DRS_PASSWORD }}
           DRS_ORDERS_URL: ${{ secrets.DRS_ORDERS_URL }}
+          DRS_LOGIN_URL: ${{ secrets.DRS_LOGIN_URL }}   # optional
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_TABLE: ${{ secrets.AIRTABLE_TABLE }}
+          DATE: ${{ secrets.DATE }}                     # optional YYYY-MM-DD
+
+      - name: Upload debug artifacts (screens & html)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drs-debug
+          path: |
+            /tmp/*.png
+            /tmp/*.html
+          if-no-files-found: ignoreecrets.AIRTABLE_TABLE }}
           DATE: ""   # optional override, e.g., 2025-10-31
