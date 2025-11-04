@@ -13,7 +13,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install --no-fund --no-audit      - run: npx playwright install --with-deps chromium
+      - run: npm install --no-fund --no-audit      
+      - run: npx playwright install --with-deps chromium
       - run: npm run scrape
         env:
           DRS_BASE: ${{ secrets.DRS_BASE }}
