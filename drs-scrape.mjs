@@ -5,9 +5,9 @@ import { chromium } from "playwright";
 import Airtable from "airtable";
 
 const env = must({
-  DRS_BASE: "https://reliablerentalequipment.ourers.com", Ashley B: "", Wyatt_2021: "",
-  DRS_ORDERS_URL: "https://reliablerentalequipment.ourers.com/cp/scheduling/", // paste the URL of the DRS page that lists daily orders/routes
-  AIRTABLE_API_KEY: "pat34PvTqLazV9MeC", appawWpkpVB9VFPSr: "", tblf8KqTXmf6vIiXH: "",
+  DRS_BASE: "", DRS_USERNAME: "", DRS_PASSWORD: "",
+  DRS_ORDERS_URL: "", // paste the URL of the DRS page that lists daily orders/routes
+  AIRTABLE_API_KEY: "", AIRTABLE_BASE_ID: "", AIRTABLE_TABLE: "",
   DATE: "" // optional override "YYYY-MM-DD"; default = today
 });
 
