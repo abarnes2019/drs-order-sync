@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -28,9 +29,9 @@ jobs:
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_TABLE: ${{ secrets.AIRTABLE_TABLE }}
-          DATE: ${{ secrets.DATE }}                     # optional YYYY-MM-DD
+          DATE: ${{ secrets.DATE }}                     # optional (YYYY-MM-DD)
 
-      - name: Upload debug artifacts (screens & html)
+      - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -38,5 +39,4 @@ jobs:
           path: |
             /tmp/*.png
             /tmp/*.html
-          if-no-files-found: ignoreecrets.AIRTABLE_TABLE }}
-          DATE: ""   # optional override, e.g., 2025-10-31
+          if-no-files-found: ignore
