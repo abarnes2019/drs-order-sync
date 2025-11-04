@@ -1,7 +1,7 @@
 // Headless DRS scraper → Airtable upsert (robust login + debug artifacts)
-// Required repo SECRETS: DRS_BASE, DRS_USERNAME, DRS_PASSWORD, DRS_ORDERS_URL,
-// AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE
-// Optional SECRETS: DRS_LOGIN_URL (exact login page), DATE (YYYY-MM-DD)
+// SECRETS required: DRS_BASE, DRS_USERNAME, DRS_PASSWORD, DRS_ORDERS_URL,
+//                   AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE
+// Optional:         DRS_LOGIN_URL (exact login page), DATE (YYYY-MM-DD)
 
 import fs from "node:fs/promises";
 import { chromium } from "playwright";
@@ -103,13 +103,15 @@ function ymdUTC(d=new Date()){ const y=d.getUTCFullYear(), m=String(d.getUTCMont
 function trimSlash(u){ return (u||"").replace(/\/+$/,""); }
 
 async function hasPasswordField(page){
-  return !!(await page.$('input[placeholder="Password"], input[name="password"], input#password, input[type="password"]'));
+  const sel = 'input[placeholder="Password"], input[name="password"], input#password, input[type="password"]';
+  const el = await page.$(sel);
+  return Boolean(el);
 }
 
 async function tryLogin(page, user, pass){
   await page.waitForLoadState("domcontentloaded");
 
-  // Username field (target your screenshot placeholders first)
+  // Username field (target placeholders first)
   const userField =
     (await page.$('input[placeholder="Username"]')) ||
     (await page.$('input[name="username"]')) ||
@@ -123,7 +125,7 @@ async function tryLogin(page, user, pass){
     (await page.$('input[placeholder="Password"]')) ||
     (await page.$('input[name="password"]')) ||
     (await page.$('input#password')) ||
-    (await page.$('input[type="password"]')));
+    (await page.$('input[type="password"]'));
   if (!pwdField) return false;
 
   await userField.fill(user);
@@ -143,7 +145,7 @@ async function tryLogin(page, user, pass){
 
   const stillPwd = await hasPasswordField(page);
   const hasLogout = await page.$('a:has-text("Logout"), button:has-text("Logout")');
-  return !stillPwd || !!hasLogout;
+  return !stillPwd || Boolean(hasLogout);
 }
 
 function pick(obj, keys){ for (const k of keys) { if (obj[k]) return obj[k]; } return ""; }
