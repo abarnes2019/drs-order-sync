@@ -20,9 +20,9 @@ const targetDate = env.DATE || ymdUTC();
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
 
-  // 1) Go to login page (explicit if provided; else try common paths and fallback to base)
+  // ----- 1) Login -----
   const candidates = [
-    env.DRS_LOGIN_URL,
+    env.DRS_LOGIN_URL,                                   // explicit login URL if provided
     `${trimSlash(env.DRS_BASE)}/login/`,
     `${trimSlash(env.DRS_BASE)}/users/login/`,
     `${trimSlash(env.DRS_BASE)}/account/login/`,
@@ -34,39 +34,36 @@ const targetDate = env.DATE || ymdUTC();
   for (const url of candidates) {
     await page.goto(url, { waitUntil: "domcontentloaded" });
     if (await tryLogin(page, env.DRS_USERNAME, env.DRS_PASSWORD)) { loggedIn = true; break; }
-    // If already authenticated, many apps show a dashboard; treat that as logged in.
+    // If there's no password field anymore, assume we are logged in already.
     if (!(await hasPasswordField(page))) { loggedIn = true; break; }
   }
   if (!loggedIn) {
     await snapshot(page, "login-failed");
-    throw new Error(`Login failed. See artifacts (screenshot/html). URL: ${page.url()}`);
+    throw new Error(`Login failed. See artifacts. URL: ${page.url()}`);
   }
 
-  // 2) Navigate to the orders list page you provided
+  // ----- 2) Navigate to orders page -----
   await page.goto(env.DRS_ORDERS_URL, { waitUntil: "domcontentloaded" });
 
-  // 3) Set date filters if present (best-effort)
+  // ----- 3) Apply date filter if inputs exist -----
   const startSel = 'input[name="start"], input[name="from"], input#start_date, input#date';
   const endSel   = 'input[name="end"], input[name="to"], input#end_date';
   if (await page.$(startSel)) { await page.fill(startSel, targetDate); }
   if (await page.$(endSel))   { await page.fill(endSel,   targetDate); }
+
   const filterBtn = page.locator('button:has-text("Filter"), button:has-text("Apply"), button:has-text("Search"), input[type="submit"]');
   if (await filterBtn.first().count()) {
     await Promise.all([
-      page.waitForLoadState("domcontentloaded"),
+      page.waitForLoadState("networkidle"),
       filterBtn.first().click()
     ]);
   }
 
-  // 4) Extract the best-looking table
+  // ----- 4) Extract table -----
   const rows = await extractTable(page);
+  if (!rows.length) await snapshot(page, "no-rows");
 
-  // If no rows, dump a snapshot to artifacts to see what the page looks like
-  if (!rows.length) {
-    await snapshot(page, "no-rows");
-  }
-
-  // 5) Upsert to Airtable
+  // ----- 5) Upsert to Airtable -----
   const base = new Airtable({ apiKey: env.AIRTABLE_API_KEY }).base(env.AIRTABLE_BASE_ID);
   const table = base(env.AIRTABLE_TABLE);
 
@@ -97,64 +94,59 @@ function must(obj) {
   const out = {};
   for (const k of Object.keys(obj)) {
     const v = process.env[k];
-    if (!v && !["DRS_LOGIN_URL","DATE"].includes(k)) {
-      throw new Error(`Missing env ${k}`);
-    }
+    if (!v && !["DRS_LOGIN_URL","DATE"].includes(k)) throw new Error(`Missing env ${k}`);
     out[k] = v || "";
   }
   return out;
 }
 function ymdUTC(d=new Date()){ const y=d.getUTCFullYear(), m=String(d.getUTCMonth()+1).padStart(2,"0"), day=String(d.getUTCDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
 function trimSlash(u){ return (u||"").replace(/\/+$/,""); }
-async function hasPasswordField(page){
-  return !!(await page.$('input[type="password"], input#password, input[name="password"]'));
-}
-async function tryLogin(page, user, pass){
-  // Find any form that contains a password input; fill the first text-like before it
-  const pwd = await page.$('input[type="password"], input#password, input[name="password"]');
-  if (!pwd) return false;
 
-  // Try a few username selectors; fallback to "first text input before password"
-  const usernameSelectors = [
-    'input[name="username"]', 'input#username', 'input[name="email"]',
-    'input[type="email"]', 'input[type="text"]'
-  ];
-  let userField = null;
-  for (const sel of usernameSelectors) {
-    const h = await page.$(sel);
-    if (h) { userField = h; break; }
-  }
-  if (!userField) {
-    // walk DOM: the first text-like input preceding password
-    userField = await page.$('input[type="text"], input[type="email"]');
-  }
+async function hasPasswordField(page){
+  return !!(await page.$('input[placeholder="Password"], input[name="password"], input#password, input[type="password"]'));
+}
+
+async function tryLogin(page, user, pass){
+  await page.waitForLoadState("domcontentloaded");
+
+  // Username field (target your screenshot placeholders first)
+  const userField =
+    (await page.$('input[placeholder="Username"]')) ||
+    (await page.$('input[name="username"]')) ||
+    (await page.$('input#username')) ||
+    (await page.$('input[type="text"]')) ||
+    (await page.$('input[type="email"]'));
   if (!userField) return false;
 
-  await userField.fill(user);
-  await pwd.fill(pass);
+  // Password field
+  const pwdField =
+    (await page.$('input[placeholder="Password"]')) ||
+    (await page.$('input[name="password"]')) ||
+    (await page.$('input#password')) ||
+    (await page.$('input[type="password"]')));
+  if (!pwdField) return false;
 
-  // Find a likely submit
-  const submit = page.locator('button:has-text("Log"), button:has-text("Sign"), button[type="submit"], input[type="submit"]');
+  await userField.fill(user);
+  await pwdField.fill(pass);
+
+  const submit =
+    page.locator('button:has-text("Sign in"), button:has-text("Sign"), button:has-text("Log"), button[type="submit"], input[type="submit"]');
   if (await submit.first().count()) {
     await Promise.all([
-      page.waitForLoadState("domcontentloaded"),
+      page.waitForLoadState("networkidle"),
       submit.first().click()
     ]);
   } else {
     await page.keyboard.press("Enter");
-    await page.waitForLoadState("domcontentloaded");
+    await page.waitForLoadState("networkidle");
   }
 
-  // Heuristic: if password field is gone or we find "Logout", assume logged in.
-  const stillHasPwd = await hasPasswordField(page);
+  const stillPwd = await hasPasswordField(page);
   const hasLogout = await page.$('a:has-text("Logout"), button:has-text("Logout")');
-  return !stillHasPwd || !!hasLogout;
+  return !stillPwd || !!hasLogout;
 }
 
-function pick(obj, keys){
-  for (const k of keys) { if (obj[k]) return obj[k]; }
-  return "";
-}
+function pick(obj, keys){ for (const k of keys) { if (obj[k]) return obj[k]; } return ""; }
 
 async function snapshot(page, tag){
   try {
@@ -169,7 +161,6 @@ async function snapshot(page, tag){
 }
 
 async function extractTable(page) {
-  // Wait for any table-like structure to appear a bit, but don't block the job forever
   try { await page.waitForSelector("table", { timeout: 10000 }); } catch {}
   const rows = await page.$$eval("table", (tbls) => {
     function clean(s){return (s||"").replace(/\s+/g," ").trim();}
@@ -186,7 +177,6 @@ async function extractTable(page) {
       return { headers: ths, score, rows };
     });
     const best = packs.sort((a,b)=>b.score-a.score)[0] || { headers:[], rows:[] };
-    // Title Case keys
     return best.rows.map(r => {
       const out = {};
       for (const [k,v] of Object.entries(r)) {
