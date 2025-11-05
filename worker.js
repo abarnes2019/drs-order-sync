@@ -1,15 +1,8 @@
-// Cloudflare Worker: DRS proxy (POST form only, JSON-only response)
-// Env vars (Cloudflare > Workers > your worker > Settings > Variables):
-//   DRS_BASE       = https://reliablerentalequipment.ourers.com
-//   DRS_DEV_KEY    = your dev key (ERS "key")
-//   DRS_API_TOKEN  = your API token (ERS "token")
-//
-// Usage from client:
-//   GET https://<your-worker>/ ?date=YYYY-MM-DD
-//   or ?start=YYYY-MM-DD&end=YYYY-MM-DD
-//
-// Returns: { orders: [...] }  (502 if the upstream isn’t valid JSON)
-
+// Cloudflare Worker: DRS proxy (POST form & header auth) + debug diagnostics
+// Env vars:
+//  DRS_BASE       = https://reliablerentalequipment.ourers.com
+//  DRS_DEV_KEY    = <dev key>
+//  DRS_API_TOKEN  = <api token>
 export default {
   async fetch(req, env) {
     if (req.method === "OPTIONS") return ok(null, cors());
@@ -18,6 +11,7 @@ export default {
     const base  = String(env.DRS_BASE || "").replace(/\/+$/, "");
     const key   = env.DRS_DEV_KEY || "";
     const token = env.DRS_API_TOKEN || "";
+    const debug = url.searchParams.get("debug") === "1";
 
     if (!base || !key || !token) {
       return json({ error: "Worker missing DRS_BASE/DRS_DEV_KEY/DRS_API_TOKEN" }, 500);
@@ -32,26 +26,42 @@ export default {
       `${base}/api/read/orders/${start}/${end}/`
     ];
 
-    let diag = { status: 0, ct: "", len: 0, head: "", url: "" };
-
+    const attempts = [];
     for (const u of endpoints) {
-      const { res, tried } = await postForm(u, { key, token });
-      const ct  = (res.headers.get("content-type") || "").toLowerCase();
-      const txt = await res.text();
-      const head = txt.slice(0, 500);
-      let data = null;
-      try { data = JSON.parse(txt); } catch { /* not JSON */ }
-
-      if (res.ok && data) {
-        const orders = normalizeArray(data);
-        if (Array.isArray(orders)) {
-          return json({ orders }, 200);
-        }
-      }
-      diag = { status: res.status, ct, len: txt.length, head, url: tried };
+      attempts.push(() => postForm(u, key, token, "post-form"));
+      attempts.push(() => postHeaders(u, key, token, "post-headers"));
+      attempts.push(() => getHeaders(u, key, token, "get-headers"));
     }
 
-    return json({ error: "DRS returned no JSON array", diagnostics: diag }, 502);
+    let diag = { status: 0, ct: "", len: 0, head: "", url: "", mode: "", keys: [] };
+
+    for (const tryOne of attempts) {
+      const { res, tried, mode } = await tryOne();
+      const ct  = (res.headers.get("content-type") || "").toLowerCase();
+      const txt = await res.text();
+      let parsed = null; try { parsed = JSON.parse(txt); } catch {}
+
+      const keys = parsed && typeof parsed === "object" ? Object.keys(parsed) : [];
+      const head = txt.slice(0, 500);
+
+      if (res.ok && parsed) {
+        const orders = pickArray(parsed);
+        if (Array.isArray(orders) && (orders.length > 0 || !debug)) {
+          return json({ orders, source: mode }, 200);
+        }
+        // if debug, fall through so we can include diagnostics
+        diag = { status: res.status, ct, len: txt.length, head, url: tried, mode, keys };
+      } else {
+        diag = { status: res.status, ct, len: txt.length, head, url: tried, mode, keys };
+      }
+    }
+
+    // If we got here, no usable array found. In debug mode, include diagnostics.
+    if (debug) {
+      return json({ orders: [], diagnostics: diag }, 502);
+    }
+    // Non-debug: return empty but still JSON, so clients don’t crash.
+    return json({ orders: [] , source: "no-array" }, 200);
   }
 };
 
@@ -67,9 +77,9 @@ function json(obj, status = 200) { const h = cors(); h.set("content-type","appli
 function ymd(d = new Date()) { const y=d.getUTCFullYear(), m=String(d.getUTCMonth()+1).padStart(2,"0"), da=String(d.getUTCDate()).padStart(2,"0"); return `${y}-${m}-${da}`; }
 function enc(x) { return encodeURIComponent(x ?? ""); }
 
-async function postForm(url, fields) {
+async function postForm(url, key, token, mode) {
   const u = url.endsWith("/") ? url : url + "/";
-  const body = Object.entries(fields).map(([k,v])=>`${k}=${enc(v)}`).join("&");
+  const body = `key=${enc(key)}&token=${enc(token)}`;
   const res = await fetch(u, {
     method: "POST",
     headers: {
@@ -80,18 +90,52 @@ async function postForm(url, fields) {
     body,
     redirect: "follow"
   });
-  // pass-through with CORS
-  const h = new Headers(res.headers);
-  cors(h);
-  return { res: new Response(await res.body, { status: res.status, headers: h }), tried: u };
+  return wrap(res, u, mode);
 }
 
-// Find the first reasonable array inside a DRS response
-function normalizeArray(root) {
+async function postHeaders(url, key, token, mode) {
+  const u = url.endsWith("/") ? url : url + "/";
+  const res = await fetch(u, {
+    method: "POST",
+    headers: {
+      "Accept": "application/json",
+      "ERS-DEV-KEY": key,
+      "ERS-API-TOKEN": token,
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    redirect: "follow"
+  });
+  return wrap(res, u, mode);
+}
+
+async function getHeaders(url, key, token, mode) {
+  const u = url.endsWith("/") ? url : url + "/";
+  const res = await fetch(u, {
+    method: "GET",
+    headers: {
+      "Accept": "application/json",
+      "ERS-DEV-KEY": key,
+      "ERS-API-TOKEN": token,
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    redirect: "follow"
+  });
+  return wrap(res, u, mode);
+}
+
+function wrap(res, tried, mode) {
+  const h = new Headers(res.headers); cors(h);
+  return { res: new Response(res.body, { status: res.status, headers: h }), tried, mode };
+}
+
+// Pull out first sensible array from a JSON object
+function pickArray(root) {
   if (Array.isArray(root)) return root;
   const keys = ["orders","order","rows","data","results","baskets","basket","list","items"];
   if (root && typeof root === "object") {
-    for (const k of keys) if (Array.isArray(root[k])) return root[k];
+    for (const k of keys) {
+      const v = root[k]; if (Array.isArray(v)) return v;
+    }
   }
   // deep walk
   const seen = new Set();
@@ -100,8 +144,7 @@ function normalizeArray(root) {
     seen.add(x);
     if (Array.isArray(x)) return x;
     for (const v of Object.values(x)) {
-      const r = walk(v);
-      if (r) return r;
+      const r = walk(v); if (r) return r;
     }
     return null;
   }
