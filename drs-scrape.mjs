@@ -1,15 +1,10 @@
-// Headless DRS scraper → Airtable upsert (robust login + debug artifacts + Airtable field mapping)
+// Headless DRS scraper → Airtable upsert (with debug artifacts + Airtable field mapping)
 // SECRETS required: DRS_BASE, DRS_USERNAME, DRS_PASSWORD, DRS_ORDERS_URL,
 //                   AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE
 // Optional:         DRS_LOGIN_URL, DATE (YYYY-MM-DD)
 // Optional field-name overrides (defaults shown):
-// AT_FIELD_DATE="Date"
-// AT_FIELD_CUSTOMER="Customer"
-// AT_FIELD_ADDRESS="Address"
-// AT_FIELD_PHONE="Phone"
-// AT_FIELD_SIZE="Dumpster Size"
-// AT_FIELD_ORDER="Order #"
-// AT_FIELD_STATUS="Status"
+// AT_FIELD_DATE="Date", AT_FIELD_CUSTOMER="Customer", AT_FIELD_ADDRESS="Address",
+// AT_FIELD_PHONE="Phone", AT_FIELD_SIZE="Dumpster Size", AT_FIELD_ORDER="Order #", AT_FIELD_STATUS="Status"
 
 import fs from "node:fs/promises";
 import { chromium } from "playwright";
@@ -76,32 +71,42 @@ const targetDate = env.DATE || ymdUTC();
   const rows = await extractTable(page);
   if (!rows.length) await snapshot(page, "no-rows");
 
+  // ALWAYS write what we scraped so you can inspect it
+  await fs.writeFile("/tmp/orders.json", JSON.stringify({ date: targetDate, count: rows.length, map: F, sample: rows[0] || null, rows }, null, 2), "utf8");
+
   // ----- 5) Upsert to Airtable -----
-  const base = new Airtable({ apiKey: env.AIRTABLE_API_KEY }).base(env.AIRTABLE_BASE_ID);
-  const table = base(env.AIRTABLE_TABLE);
+  let imported = 0;
+  if (rows.length) {
+    const base = new Airtable({ apiKey: env.AIRTABLE_API_KEY }).base(env.AIRTABLE_BASE_ID);
+    const table = base(env.AIRTABLE_TABLE);
 
-  const mapped = rows.map(r => ({
-    [F.date]:    targetDate,
-    [F.customer]:pick(r, ["Customer","Name","Client"]),
-    [F.address]: pick(r, ["Address","Delivery Address"]),
-    [F.phone]:   pick(r, ["Phone","Phone Number"]),
-    [F.size]:    pick(r, ["Dumpster Size","Size"]),
-    [F.order]:   pick(r, ["Order","Order ID","ID"]),
-    [F.status]:  pick(r, ["Status"])
-  }));
+    const mapped = rows.map(r => ({
+      [F.date]:    targetDate,
+      [F.customer]:pick(r, ["Customer","Name","Client"]),
+      [F.address]: pick(r, ["Address","Delivery Address"]),
+      [F.phone]:   pick(r, ["Phone","Phone Number"]),
+      [F.size]:    pick(r, ["Dumpster Size","Size"]),
+      [F.order]:   pick(r, ["Order","Order ID","ID"]),
+      [F.status]:  pick(r, ["Status"])
+    }));
 
-  for (let i = 0; i < mapped.length; i += 10) {
-    const chunk = mapped.slice(i, i + 10).map(fields => ({ fields }));
-    if (chunk.length) {
-      try { await table.create(chunk); }
-      catch (e) {
-        console.error("Airtable upsert failed. Using fields:", F);
-        throw e;
+    try {
+      for (let i = 0; i < mapped.length; i += 10) {
+        const chunk = mapped.slice(i, i + 10).map(fields => ({ fields }));
+        if (chunk.length) {
+          const created = await table.create(chunk);
+          imported += created.length;
+        }
       }
+    } catch (e) {
+      // Save the error so you can see exactly what Airtable objected to
+      const msg = typeof e === "object" ? JSON.stringify(e, null, 2) : String(e);
+      await fs.writeFile("/tmp/airtable-error.txt", msg, "utf8");
+      throw e;
     }
   }
 
-  console.log(JSON.stringify({ date: targetDate, imported: mapped.length, page: env.DRS_ORDERS_URL, fields: F }, null, 2));
+  console.log(JSON.stringify({ date: targetDate, scraped: rows.length, imported, table: env.AIRTABLE_TABLE, fields: F }, null, 2));
   await browser.close();
 })().catch(async (err) => {
   console.error(String(err));
@@ -129,6 +134,7 @@ async function hasPasswordField(page){
 
 async function tryLogin(page, user, pass){
   await page.waitForLoadState("domcontentloaded");
+
   const userField =
     (await page.$('input[placeholder="Username"]')) ||
     (await page.$('input[name="username"]')) ||
