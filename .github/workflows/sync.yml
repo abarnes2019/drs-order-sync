@@ -2,7 +2,7 @@ name: DRS → Airtable (hourly)
 
 on:
   schedule:
-    - cron: '0 * * * *'   # hourly
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,11 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - run: npm install --no-fund --no-audit
       - run: npx playwright install --with-deps chromium
 
@@ -25,11 +23,19 @@ jobs:
           DRS_USERNAME: ${{ secrets.DRS_USERNAME }}
           DRS_PASSWORD: ${{ secrets.DRS_PASSWORD }}
           DRS_ORDERS_URL: ${{ secrets.DRS_ORDERS_URL }}
-          DRS_LOGIN_URL: ${{ secrets.DRS_LOGIN_URL }}   # optional
+          DRS_LOGIN_URL: ${{ secrets.DRS_LOGIN_URL }}
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_TABLE: ${{ secrets.AIRTABLE_TABLE }}
-          DATE: ${{ secrets.DATE }}                     # optional (YYYY-MM-DD)
+          DATE: ${{ secrets.DATE }}
+          # Optional Airtable field-name overrides
+          AT_FIELD_DATE: ${{ secrets.AT_FIELD_DATE }}
+          AT_FIELD_CUSTOMER: ${{ secrets.AT_FIELD_CUSTOMER }}
+          AT_FIELD_ADDRESS: ${{ secrets.AT_FIELD_ADDRESS }}
+          AT_FIELD_PHONE: ${{ secrets.AT_FIELD_PHONE }}
+          AT_FIELD_SIZE: ${{ secrets.AT_FIELD_SIZE }}
+          AT_FIELD_ORDER: ${{ secrets.AT_FIELD_ORDER }}
+          AT_FIELD_STATUS: ${{ secrets.AT_FIELD_STATUS }}
 
       - name: Upload debug artifacts
         if: always()
