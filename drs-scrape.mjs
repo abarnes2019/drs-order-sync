@@ -1,7 +1,15 @@
-// Headless DRS scraper → Airtable upsert (robust login + debug artifacts)
+// Headless DRS scraper → Airtable upsert (robust login + debug artifacts + Airtable field mapping)
 // SECRETS required: DRS_BASE, DRS_USERNAME, DRS_PASSWORD, DRS_ORDERS_URL,
 //                   AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE
-// Optional:         DRS_LOGIN_URL (exact login page), DATE (YYYY-MM-DD)
+// Optional:         DRS_LOGIN_URL, DATE (YYYY-MM-DD)
+// Optional field-name overrides (defaults shown):
+// AT_FIELD_DATE="Date"
+// AT_FIELD_CUSTOMER="Customer"
+// AT_FIELD_ADDRESS="Address"
+// AT_FIELD_PHONE="Phone"
+// AT_FIELD_SIZE="Dumpster Size"
+// AT_FIELD_ORDER="Order #"
+// AT_FIELD_STATUS="Status"
 
 import fs from "node:fs/promises";
 import { chromium } from "playwright";
@@ -13,6 +21,16 @@ const env = must({
   DRS_LOGIN_URL: "", DATE: ""
 });
 
+const F = {
+  date:    process.env.AT_FIELD_DATE    || "Date",
+  customer:process.env.AT_FIELD_CUSTOMER|| "Customer",
+  address: process.env.AT_FIELD_ADDRESS || "Address",
+  phone:   process.env.AT_FIELD_PHONE   || "Phone",
+  size:    process.env.AT_FIELD_SIZE    || "Dumpster Size",
+  order:   process.env.AT_FIELD_ORDER   || "Order #",
+  status:  process.env.AT_FIELD_STATUS  || "Status",
+};
+
 const targetDate = env.DATE || ymdUTC();
 
 (async () => {
@@ -22,7 +40,7 @@ const targetDate = env.DATE || ymdUTC();
 
   // ----- 1) Login -----
   const candidates = [
-    env.DRS_LOGIN_URL,                                   // explicit login URL if provided
+    env.DRS_LOGIN_URL,
     `${trimSlash(env.DRS_BASE)}/login/`,
     `${trimSlash(env.DRS_BASE)}/users/login/`,
     `${trimSlash(env.DRS_BASE)}/account/login/`,
@@ -34,7 +52,6 @@ const targetDate = env.DATE || ymdUTC();
   for (const url of candidates) {
     await page.goto(url, { waitUntil: "domcontentloaded" });
     if (await tryLogin(page, env.DRS_USERNAME, env.DRS_PASSWORD)) { loggedIn = true; break; }
-    // If there's no password field anymore, assume we are logged in already.
     if (!(await hasPasswordField(page))) { loggedIn = true; break; }
   }
   if (!loggedIn) {
@@ -50,13 +67,9 @@ const targetDate = env.DATE || ymdUTC();
   const endSel   = 'input[name="end"], input[name="to"], input#end_date';
   if (await page.$(startSel)) { await page.fill(startSel, targetDate); }
   if (await page.$(endSel))   { await page.fill(endSel,   targetDate); }
-
   const filterBtn = page.locator('button:has-text("Filter"), button:has-text("Apply"), button:has-text("Search"), input[type="submit"]');
   if (await filterBtn.first().count()) {
-    await Promise.all([
-      page.waitForLoadState("networkidle"),
-      filterBtn.first().click()
-    ]);
+    await Promise.all([ page.waitForLoadState("networkidle"), filterBtn.first().click() ]);
   }
 
   // ----- 4) Extract table -----
@@ -68,21 +81,27 @@ const targetDate = env.DATE || ymdUTC();
   const table = base(env.AIRTABLE_TABLE);
 
   const mapped = rows.map(r => ({
-    "Date": targetDate,
-    "Customer": pick(r, ["Customer","Name","Client"]),
-    "Address": pick(r, ["Address","Delivery Address"]),
-    "Phone": pick(r, ["Phone","Phone Number"]),
-    "Dumpster Size": pick(r, ["Dumpster Size","Size"]),
-    "Order #": pick(r, ["Order","Order ID","ID"]),
-    "Status": pick(r, ["Status"])
+    [F.date]:    targetDate,
+    [F.customer]:pick(r, ["Customer","Name","Client"]),
+    [F.address]: pick(r, ["Address","Delivery Address"]),
+    [F.phone]:   pick(r, ["Phone","Phone Number"]),
+    [F.size]:    pick(r, ["Dumpster Size","Size"]),
+    [F.order]:   pick(r, ["Order","Order ID","ID"]),
+    [F.status]:  pick(r, ["Status"])
   }));
 
   for (let i = 0; i < mapped.length; i += 10) {
     const chunk = mapped.slice(i, i + 10).map(fields => ({ fields }));
-    if (chunk.length) await table.create(chunk);
+    if (chunk.length) {
+      try { await table.create(chunk); }
+      catch (e) {
+        console.error("Airtable upsert failed. Using fields:", F);
+        throw e;
+      }
+    }
   }
 
-  console.log(JSON.stringify({ date: targetDate, imported: mapped.length, page: env.DRS_ORDERS_URL }, null, 2));
+  console.log(JSON.stringify({ date: targetDate, imported: mapped.length, page: env.DRS_ORDERS_URL, fields: F }, null, 2));
   await browser.close();
 })().catch(async (err) => {
   console.error(String(err));
@@ -110,8 +129,6 @@ async function hasPasswordField(page){
 
 async function tryLogin(page, user, pass){
   await page.waitForLoadState("domcontentloaded");
-
-  // Username field (target placeholders first)
   const userField =
     (await page.$('input[placeholder="Username"]')) ||
     (await page.$('input[name="username"]')) ||
@@ -120,7 +137,6 @@ async function tryLogin(page, user, pass){
     (await page.$('input[type="email"]'));
   if (!userField) return false;
 
-  // Password field
   const pwdField =
     (await page.$('input[placeholder="Password"]')) ||
     (await page.$('input[name="password"]')) ||
@@ -131,13 +147,9 @@ async function tryLogin(page, user, pass){
   await userField.fill(user);
   await pwdField.fill(pass);
 
-  const submit =
-    page.locator('button:has-text("Sign in"), button:has-text("Sign"), button:has-text("Log"), button[type="submit"], input[type="submit"]');
+  const submit = page.locator('button:has-text("Sign in"), button:has-text("Sign"), button:has-text("Log"), button[type="submit"], input[type="submit"]');
   if (await submit.first().count()) {
-    await Promise.all([
-      page.waitForLoadState("networkidle"),
-      submit.first().click()
-    ]);
+    await Promise.all([ page.waitForLoadState("networkidle"), submit.first().click() ]);
   } else {
     await page.keyboard.press("Enter");
     await page.waitForLoadState("networkidle");
