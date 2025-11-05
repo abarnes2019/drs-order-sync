@@ -1,0 +1,35 @@
+name: DRS → Airtable (via Worker)
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # hourly
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Pull from Worker and upsert to Airtable
+        run: node drs-pull.mjs
+        env:
+          WORKER_URL:        ${{ secrets.WORKER_URL }}
+          AIRTABLE_API_KEY:  ${{ secrets.AIRTABLE_API_KEY }}
+          AIRTABLE_BASE_ID:  ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE:    ${{ secrets.AIRTABLE_TABLE }}
+          DATE:              ${{ secrets.DATE }}            # optional single day
+          START:             ${{ secrets.START }}           # optional range
+          END:               ${{ secrets.END }}             # optional range
+          # Optional custom column names:
+          AT_FIELD_DATE:     ${{ secrets.AT_FIELD_DATE }}
+          AT_FIELD_CUSTOMER: ${{ secrets.AT_FIELD_CUSTOMER }}
+          AT_FIELD_ADDRESS:  ${{ secrets.AT_FIELD_ADDRESS }}
+          AT_FIELD_PHONE:    ${{ secrets.AT_FIELD_PHONE }}
+          AT_FIELD_SIZE:     ${{ secrets.AT_FIELD_SIZE }}
+          AT_FIELD_ORDER:    ${{ secrets.AT_FIELD_ORDER }}
+          AT_FIELD_STATUS:   ${{ secrets.AT_FIELD_STATUS }}
+          AT_FIELD_RAW:      ${{ secrets.AT_FIELD_RAW }}    # optional JSON snapshot field
