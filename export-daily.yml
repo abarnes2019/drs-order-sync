@@ -1,0 +1,35 @@
+name: Export DRS Daily CSV
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # 06:00 America/Chicago ≈ 12:00 UTC
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'YYYY-MM-DD (optional)'
+        required: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci || npm i
+      - run: npm run setup
+      - name: Export CSV
+        run: npm run export:daily
+        env:
+          DRS_LOGIN_URL:  ${{ secrets.DRS_LOGIN_URL }}
+          DRS_USERNAME:   ${{ secrets.DRS_USERNAME }}
+          DRS_PASSWORD:   ${{ secrets.DRS_PASSWORD }}
+          DATE:           ${{ github.event.inputs.date }}
+          OUT_DIR:        exports
+      - name: Upload CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: drs-daily-csv
+          path: exports/*.csv
+          if-no-files-found: error
