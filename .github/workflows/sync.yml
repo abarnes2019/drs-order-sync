@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - run: npm install --no-fund --no-audit
       - run: npx playwright install --with-deps chromium
 
@@ -27,8 +28,8 @@ jobs:
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_TABLE: ${{ secrets.AIRTABLE_TABLE }}
-          DATE: ${{ secrets.DATE }}
-          # Optional Airtable field-name overrides
+          DATE: ${{ secrets.DATE }}  # optional YYYY-MM-DD override
+          # Optional Airtable field-name overrides if your column names differ:
           AT_FIELD_DATE: ${{ secrets.AT_FIELD_DATE }}
           AT_FIELD_CUSTOMER: ${{ secrets.AT_FIELD_CUSTOMER }}
           AT_FIELD_ADDRESS: ${{ secrets.AT_FIELD_ADDRESS }}
@@ -45,4 +46,6 @@ jobs:
           path: |
             /tmp/*.png
             /tmp/*.html
+            /tmp/orders.json
+            /tmp/airtable-error.txt
           if-no-files-found: ignore
