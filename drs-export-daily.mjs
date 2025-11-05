@@ -1,68 +1,72 @@
-// drs-export-daily.mjs
-// Automates DRS: login → Reports → Daily → Export CSV
-// ENV required:
-//   DRS_LOGIN_URL   (e.g. https://reliablerentalequipment.ourers.com/cp/autoforward)
-//   DRS_USERNAME    (e.g. "Ashley B")
-//   DRS_PASSWORD
+// Automates DRS: Login → Reports → click "Day" tab → set date → "Export To CSV"
+// Usage (local):
+//   npm i playwright
+//   npx playwright install --with-deps chromium
+//   DRS_LOGIN_URL='https://reliablerentalequipment.ourers.com/cp/autoforward' \
+//   DRS_USERNAME='Ashley B' DRS_PASSWORD='YOUR_PASS' \
+//   node drs-export-daily.mjs --date=2025-11-05 --out=./exports
+//
 // Optional ENV:
-//   DRS_REPORTS_URL (direct URL to Reports page if you have it)
-//   DATE            (YYYY-MM-DD; defaults to today local)
-//   HEADLESS=0      (to see the browser)
-//   OUT_DIR         (default: ./exports)
+//   DRS_REPORTS_URL (direct URL to that "Reports: Order List" page)
+//   HEADLESS=0  (to watch it run)
+//   DATE=YYYY-MM-DD (alternative to --date)
+//   OUT_DIR=./path
 
 import fs from "node:fs/promises";
+import path from "node:path";
 import { chromium } from "playwright";
 
-const env = must([
-  "DRS_LOGIN_URL",
-  "DRS_USERNAME",
-  "DRS_PASSWORD",
-]);
+const args = Object.fromEntries(process.argv.slice(2).map(a => {
+  const m = a.match(/^--([^=]+)=(.*)$/); return m ? [m[1], m[2]] : [a, true];
+}));
 
-const DATE = process.env.DATE || ymdLocal();
-const OUT_DIR = process.env.OUT_DIR || "exports";
-const HEADLESS = process.env.HEADLESS !== "0";
+const DRS_LOGIN_URL   = need("DRS_LOGIN_URL");
+const DRS_USERNAME    = need("DRS_USERNAME");
+const DRS_PASSWORD    = need("DRS_PASSWORD");
+const DRS_REPORTS_URL = process.env.DRS_REPORTS_URL || "";
+const HEADLESS        = process.env.HEADLESS === "0" ? false : true;
+const OUT_DIR         = process.env.OUT_DIR || args.out || "./exports";
+const DATE_ISO        = (process.env.DATE || args.date || ymdLocal());
+const DATE_MDY        = isoToMDY(DATE_ISO); // UI shows 11/05/2025
 
 (async () => {
+  await fs.mkdir(OUT_DIR, { recursive: true });
+
   const browser = await chromium.launch({ headless: HEADLESS });
-  const ctx = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 } });
+  const ctx = await browser.newContext({ acceptDownloads: true, viewport: { width: 1400, height: 900 } });
   const page = await ctx.newPage();
 
-  // 1) LOGIN
-  await page.goto(process.env.DRS_LOGIN_URL, { waitUntil: "domcontentloaded" });
+  // 1) Login
+  await page.goto(DRS_LOGIN_URL, { waitUntil: "domcontentloaded" });
   await fillFirst(page, [
     'input[placeholder="Username"]',
     'input[name="username"]',
     '#username',
     'input[type="text"]',
     'input[type="email"]'
-  ], process.env.DRS_USERNAME);
+  ], DRS_USERNAME);
 
   await fillFirst(page, [
     'input[placeholder="Password"]',
     'input[name="password"]',
     '#password',
     'input[type="password"]'
-  ], process.env.DRS_PASSWORD);
+  ], DRS_PASSWORD);
 
   await clickFirst(page, [
     'button:has-text("Sign in")',
-    'button:has-text("Sign")',
+    'button:has-text("Log in")',
+    'button:has-text("Login")',
     'button[type="submit"]',
     'input[type="submit"]'
   ]);
 
-  // consider logged in when password field disappears or we see Reports
   await page.waitForLoadState("networkidle");
-  const loggedIn = !(await page.$('input[type="password"], input[name="password"], #password'));
 
-  if (!loggedIn) throw new Error("Login failed (password field still present).");
-
-  // 2) REPORTS PAGE
-  if (process.env.DRS_REPORTS_URL) {
-    await page.goto(process.env.DRS_REPORTS_URL, { waitUntil: "domcontentloaded" });
+  // 2) Go to Reports page
+  if (DRS_REPORTS_URL) {
+    await page.goto(DRS_REPORTS_URL, { waitUntil: "domcontentloaded" });
   } else {
-    // try menus
     await clickFirst(page, [
       'a:has-text("Reports")',
       'button:has-text("Reports")',
@@ -72,92 +76,77 @@ const HEADLESS = process.env.HEADLESS !== "0";
   }
   await page.waitForLoadState("domcontentloaded");
 
-  // 3) SELECT DAILY REPORT
+  // 3) Click "Day" tab (your UI defaults to Month)
   await clickFirst(page, [
-    'a:has-text("Daily")',
-    'button:has-text("Daily")',
-    '[role="tab"]:has-text("Daily")',
-    'select[name*="report"], select#report, select[name*="Report"]'
+    'button:has-text("Day")',
+    'a:has-text("Day")',
+    '[role="tab"]:has-text("Day")',
+    'text=/^\\s*Day\\s*$/'
   ], { optional: true });
 
-  // if a <select>, set to "Daily"
-  await selectIfPresent(page, [
-    'select[name*="report"]',
-    'select#report',
-    'select[name*="Report"]'
-  ], /daily/i);
+  // 4) Put date into the MM/DD/YYYY input near the top controls
+  await setDateInAnyDateBox(page, DATE_MDY);
 
-  // 4) SET DATE (best effort)
-  await setDateIfPresent(page, DATE);
+  // 5) Export CSV (capture download)
+  const fileName = `DRS-Daily-${DATE_ISO}.csv`;
+  const savePath = path.join(OUT_DIR, fileName);
 
-  // 5) EXPORT CSV (capture download)
-  const fileSafeDate = DATE;
-  await fs.mkdir(OUT_DIR, { recursive: true }).catch(() => {});
-  const targetPath = `${OUT_DIR}/DRS-Daily-${fileSafeDate}.csv`;
+  const downloadP = page.waitForEvent("download", { timeout: 30000 }).catch(() => null);
 
-  const [download] = await Promise.all([
-    page.waitForEvent("download", { timeout: 30000 }),
-    clickFirst(page, [
-      'button:has-text("Export")',
-      'button:has-text("CSV")',
-      'a:has-text("Export")',
-      'a:has-text("CSV")',
-      '[aria-label*="Export"]',
-      '[aria-label*="CSV"]',
-      'text=/Export.*CSV/i',
-      'text=/CSV/i'
-    ])
+  await clickFirst(page, [
+    'button:has-text("Export To CSV")',
+    'a:has-text("Export To CSV")',
+    'button:has-text("CSV")',
+    'a:has-text("CSV")',
+    'text=/Export\\s*To\\s*CSV/i'
   ]);
 
-  await download.saveAs(targetPath);
-  console.log(`SAVED ${targetPath}`);
+  let dl = await downloadP;
+
+  if (dl) {
+    const suggested = dl.suggestedFilename() || fileName;
+    const final = suggested.toLowerCase().endsWith(".csv") ? suggested : fileName;
+    await dl.saveAs(path.join(OUT_DIR, final));
+    console.log(`SAVED ${path.join(OUT_DIR, final)}`);
+  } else {
+    // Fallback: sometimes the CSV opens inline
+    const maybe = await tryGrabCSVFromPage(page);
+    if (!maybe) {
+      await page.screenshot({ path: path.join(OUT_DIR, "no-download.png"), fullPage: true }).catch(()=>{});
+      throw new Error("No CSV download detected and page wasn’t CSV. See no-download.png");
+    }
+    await fs.writeFile(savePath, maybe, "utf8");
+    console.log(`SAVED ${savePath}`);
+  }
 
   await browser.close();
-})().catch(async (err) => {
-  console.error("ERROR:", err.message);
-  process.exit(1);
-});
+})().catch(err => { console.error(err?.stack || String(err)); process.exit(1); });
 
 // ---------- helpers ----------
-function must(list){
-  for (const k of list) {
-    if (!process.env[k] || String(process.env[k]).trim()==="") {
-      console.error(`Missing env ${k}`);
-      process.exit(2);
-    }
-  }
-  return true;
-}
+function need(k){ const v = process.env[k]; if (!v) { console.error(`Missing env ${k}`); process.exit(2); } return v; }
+function ymdLocal(d=new Date()){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,"0"), da=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${da}`; }
+function isoToMDY(s){ const m=s.match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m) return s; return `${m[2]}/${m[3]}/${m[1]}`; }
 
 async function fillFirst(page, selectors, value){
   for (const sel of selectors) {
     const el = await page.$(sel);
-    if (el) { await el.fill(value); return; }
-  }
-  throw new Error(`Unable to find input for selectors: ${selectors.join(" | ")}`);
-}
-
-async function clickFirst(page, selectors, opts = {}){
-  for (const sel of selectors) {
-    const loc = page.locator(sel).first();
-    if (await loc.count()) { await loc.click(); return; }
-  }
-  if (!opts.optional) throw new Error(`Unable to click any of: ${selectors.join(" | ")}`);
-}
-
-async function selectIfPresent(page, selectors, optionRegex){
-  for (const sel of selectors) {
-    const el = await page.$(sel);
-    if (el) {
-      const options = await page.$$eval(`${sel} option`, els => els.map(o => ({ value:o.value, text:o.textContent || "" })));
-      const match = options.find(o => optionRegex.test(o.text));
-      if (match) { await page.selectOption(sel, match.value); return true; }
-    }
+    if (el) { await el.fill(value); return true; }
   }
   return false;
 }
+async function clickFirst(page, selectors, opts = {}){
+  for (const sel of selectors) {
+    const loc = page.locator(sel).first();
+    if (await loc.count()) { await loc.click({ timeout: 8000 }); return true; }
+  }
+  if (opts.optional) return false;
+  throw new Error(`Could not click any of: ${selectors.join(" | ")}`);
+}
 
-async function setDateIfPresent(page, dateStr){
+async function setDateInAnyDateBox(page, mdy){
+  // Strategy:
+  //  - prefer obvious date inputs
+  //  - otherwise, find a text input whose value already matches MM/DD/YYYY and replace it
   const picks = [
     'input[type="date"]',
     'input[name="date"]',
@@ -168,18 +157,30 @@ async function setDateIfPresent(page, dateStr){
   ];
   for (const sel of picks) {
     const el = await page.$(sel);
-    if (el) { await el.fill(dateStr); }
+    if (el) { await el.fill(mdy); return true; }
   }
-  // if there is an "end" field, mirror the same date
-  for (const sel of ['input[name="end"]', '#end_date', 'input[name="to"]']) {
-    const el = await page.$(sel);
-    if (el) { await el.fill(dateStr); }
+
+  const boxes = await page.$$('input[type="text"]');
+  for (const el of boxes) {
+    const v = (await el.inputValue()).trim();
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(v)) {
+      await el.fill(mdy);
+      return true;
+    }
   }
+  return false;
 }
 
-function ymdLocal(d = new Date()){
-  const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2,"0");
-  const da = String(d.getDate()).padStart(2,"0");
-  return `${y}-${m}-${da}`;
+async function tryGrabCSVFromPage(page){
+  try {
+    const url = page.url();
+    if (/\.csv(\?|$)/i.test(url)) {
+      const res = await fetch(url); if (res.ok) return await res.text();
+    }
+  } catch {}
+  try {
+    const text = await page.textContent("body");
+    if (text && text.includes(",") && /\n/.test(text)) return text;
+  } catch {}
+  return "";
 }
