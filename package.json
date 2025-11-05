@@ -1,13 +1,12 @@
 {
-  "name": "drs-order-sync",
-  "version": "1.0.0",
+  "name": "drs-export-daily",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "airtable": "^0.12.1",
-    "playwright": "^1.48.2"
-  },
   "scripts": {
-    "scrape": "node drs-scrape.mjs"
+    "setup": "npx playwright install --with-deps chromium",
+    "export:daily": "node drs-export-daily.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.47.2"
   }
 }
